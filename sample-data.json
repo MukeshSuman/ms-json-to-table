@@ -1,0 +1,74 @@
+[
+  {
+    "id": 1,
+    "name": "John Doe",
+    "email": "john.doe@example.com",
+    "department": "Engineering",
+    "salary": 75000,
+    "hireDate": "2022-01-15",
+    "status": "Active"
+  },
+  {
+    "id": 2,
+    "name": "Jane Smith",
+    "email": "jane.smith@example.com",
+    "department": "Marketing",
+    "salary": 65000,
+    "hireDate": "2022-03-20",
+    "status": "Active"
+  },
+  {
+    "id": 3,
+    "name": "Bob Johnson",
+    "email": "bob.johnson@example.com",
+    "department": "Sales",
+    "salary": 70000,
+    "hireDate": "2021-11-10",
+    "status": "Inactive"
+  },
+  {
+    "id": 4,
+    "name": "Alice Brown",
+    "email": "alice.brown@example.com",
+    "department": "Engineering",
+    "salary": 80000,
+    "hireDate": "2021-08-05",
+    "status": "Active"
+  },
+  {
+    "id": 5,
+    "name": "Charlie Wilson",
+    "email": "charlie.wilson@example.com",
+    "department": "HR",
+    "salary": 60000,
+    "hireDate": "2022-05-12",
+    "status": "Active"
+  },
+  {
+    "id": 6,
+    "name": "Diana Lee",
+    "email": "diana.lee@example.com",
+    "department": "Finance",
+    "salary": 72000,
+    "hireDate": "2022-02-28",
+    "status": "Active"
+  },
+  {
+    "id": 7,
+    "name": "Eve Davis",
+    "email": "eve.davis@example.com",
+    "department": "Marketing",
+    "salary": 68000,
+    "hireDate": "2021-12-15",
+    "status": "Active"
+  },
+  {
+    "id": 8,
+    "name": "Frank Miller",
+    "email": "frank.miller@example.com",
+    "department": "Sales",
+    "salary": 73000,
+    "hireDate": "2022-04-03",
+    "status": "Active"
+  }
+]
