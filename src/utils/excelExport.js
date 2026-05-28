@@ -1,19 +1,41 @@
 import * as XLSX from 'xlsx';
 
-export const exportToExcel = (data, columns, filename, settings) => {
+export const exportToExcel = (data, columns, filename, settings, headerLabels = {}, valueMappings = {}) => {
   try {
     // Prepare data for export
     let exportData = [...data];
 
+    // Helper function to get display value with mapping
+    const getDisplayValue = (column, value) => {
+      if (valueMappings[column] && valueMappings[column][value] !== undefined) {
+        return valueMappings[column][value];
+      }
+      return value;
+    };
+
     // Add headers if enabled
     if (settings.includeHeaders) {
-      const headers = columns.map(col => col);
+      const headers = columns.map(col => headerLabels[col] || col);
       exportData = [headers, ...exportData.map(row => 
-        columns.map(col => row[col] || '')
+        columns.map(col => {
+          const value = row[col];
+          if (value === null || value === undefined) {
+            return '';
+          }
+          const stringValue = String(value);
+          return getDisplayValue(col, stringValue);
+        })
       )];
     } else {
       exportData = exportData.map(row => 
-        columns.map(col => row[col] || '')
+        columns.map(col => {
+          const value = row[col];
+          if (value === null || value === undefined) {
+            return '';
+          }
+          const stringValue = String(value);
+          return getDisplayValue(col, stringValue);
+        })
       );
     }
 

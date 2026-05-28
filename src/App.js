@@ -1,7 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import JsonUploader from './components/JsonUploader';
 import DataTable from './components/DataTable';
-import ExportControls from './components/ExportControls';
 import { Upload, FileText, Table } from 'lucide-react';
 
 function App() {
@@ -68,15 +67,10 @@ function App() {
                   <h2 className="text-lg font-semibold text-gray-900">
                     Data Table ({data.length} rows)
                   </h2>
-                  <ExportControls 
-                    data={data} 
-                    columns={columns}
-                    onClearData={handleClearData}
-                  />
                 </div>
               </div>
               <div className="overflow-x-auto">
-                <DataTable data={data} columns={columns} />
+                <DataTable data={data} columns={columns} onClearData={handleClearData} />
               </div>
             </div>
           )}

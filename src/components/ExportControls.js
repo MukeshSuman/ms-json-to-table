@@ -3,7 +3,7 @@ import { Download, FileSpreadsheet, FileText, Settings, X } from 'lucide-react';
 import { exportToExcel } from '../utils/excelExport';
 import { exportToPDF } from '../utils/pdfExport';
 
-const ExportControls = ({ data, columns, onClearData }) => {
+const ExportControls = ({ data, columns, headerLabels = {}, valueMappings = {}, onClearData }) => {
   const [showExportSettings, setShowExportSettings] = useState(false);
   const [exportSettings, setExportSettings] = useState({
     // PDF Settings
@@ -25,12 +25,12 @@ const ExportControls = ({ data, columns, onClearData }) => {
 
   const handleExcelExport = () => {
     const filename = `data-export-${new Date().toISOString().split('T')[0]}.xlsx`;
-    exportToExcel(data, columns, filename, exportSettings);
+    exportToExcel(data, columns, filename, exportSettings, headerLabels, valueMappings);
   };
 
   const handlePDFExport = () => {
     const filename = `data-export-${new Date().toISOString().split('T')[0]}.pdf`;
-    exportToPDF(data, columns, filename, exportSettings);
+    exportToPDF(data, columns, filename, exportSettings, headerLabels, valueMappings);
   };
 
   const updateExportSettings = (section, key, value) => {

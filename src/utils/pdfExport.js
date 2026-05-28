@@ -1,15 +1,33 @@
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
 
-export const exportToPDF = (data, columns, filename, settings) => {
+export const exportToPDF = (data, columns, filename, settings, headerLabels = {}, valueMappings = {}) => {
   try {
     // Create new PDF document
     const doc = new jsPDF('l', 'mm', 'a4'); // Landscape orientation for better table display
     
-    // Prepare table data
+    // Helper function to get display value with mapping
+    const getDisplayValue = (column, value) => {
+      if (valueMappings[column] && valueMappings[column][value] !== undefined) {
+        return valueMappings[column][value];
+      }
+      return value;
+    };
+
+    // Prepare table data with proper value mapping
     let tableData = data.map(row => 
-      columns.map(col => row[col] !== null && row[col] !== undefined ? String(row[col]) : '-')
+      columns.map(col => {
+        const value = row[col];
+        if (value === null || value === undefined) {
+          return '-';
+        }
+        const stringValue = String(value);
+        return getDisplayValue(col, stringValue);
+      })
     );
+
+    // Prepare headers with custom labels
+    const headers = columns.map(col => headerLabels[col] || col);
 
     // Add extra columns if enabled
     if (settings.extraColumns.enabled) {
@@ -30,7 +48,7 @@ export const exportToPDF = (data, columns, filename, settings) => {
       ]);
       
       // Update columns array for headers
-      const allColumns = [...columns, ...extraHeaders];
+      const allColumns = [...headers, ...extraHeaders];
       
       // Add extra rows if enabled
       if (settings.extraRows.enabled) {
@@ -78,7 +96,7 @@ export const exportToPDF = (data, columns, filename, settings) => {
       });
     } else {
       // No extra columns, just regular table
-      let allColumns = [...columns];
+      let allColumns = [...headers];
       
       // Add extra rows if enabled
       if (settings.extraRows.enabled) {
