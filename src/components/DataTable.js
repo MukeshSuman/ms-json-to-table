@@ -16,14 +16,26 @@ import {
   Trash2,
   Save,
   Download,
-  Upload
+  Upload,
+  Pencil
 } from 'lucide-react';
 import ExportControls from './ExportControls';
+import { saveJsonToFile, isFileSystemAccessSupported } from '../utils/jsonFileSave';
+import { compareValues } from '../utils/sortCompare';
+import { getFileFormat, getAcceptTypesForFormat, ensureFileNameExtension } from '../utils/tabularFile';
 
 const PAGE_SIZE_OPTIONS = [100, 200, 500, 1000, 5000, 'ALL'];
 const DEFAULT_PAGE_SIZE = 1000;
 
-const DataTable = ({ data, columns, onClearData }) => {
+const DataTable = ({
+  data,
+  columns,
+  onDataUpdate,
+  sourceFileHandle,
+  sourceFileName,
+  onSourceFileHandle,
+  onClearData,
+}) => {
   const [visibleColumns, setVisibleColumns] = useState(
     columns.reduce((acc, col) => ({ ...acc, [col]: true }), {})
   );
@@ -51,6 +63,11 @@ const DataTable = ({ data, columns, onClearData }) => {
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [currentPage, setCurrentPage] = useState(1);
   const settingsMenuRef = useRef(null);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [addedFieldName, setAddedFieldName] = useState(null);
+  const [draftFieldName, setDraftFieldName] = useState('');
+  const [editRowValues, setEditRowValues] = useState({});
+  const [isSaving, setIsSaving] = useState(false);
 
   // Click outside handler for settings menu
   useEffect(() => {
@@ -93,20 +110,11 @@ const DataTable = ({ data, columns, onClearData }) => {
       }
     });
 
-    // Apply sorting
+    // Apply sorting (numeric-aware for columns like admissionNumber)
     if (sortConfig.key) {
-      filteredData.sort((a, b) => {
-        const aVal = a[sortConfig.key];
-        const bVal = b[sortConfig.key];
-        
-        if (aVal < bVal) {
-          return sortConfig.direction === 'asc' ? -1 : 1;
-        }
-        if (aVal > bVal) {
-          return sortConfig.direction === 'asc' ? 1 : -1;
-        }
-        return 0;
-      });
+      filteredData.sort((a, b) =>
+        compareValues(a[sortConfig.key], b[sortConfig.key], sortConfig.direction)
+      );
     }
 
     return filteredData;
@@ -517,6 +525,108 @@ const DataTable = ({ data, columns, onClearData }) => {
 
   const visibleColumnsList = columnOrder.filter(col => visibleColumns[col]);
 
+  const activeCustomField = addedFieldName || draftFieldName.trim();
+
+  const getDataRowIndex = (row) => data.findIndex((r) => r === row);
+
+  const handleStartEdit = () => {
+    const field = addedFieldName || '';
+    const values = {};
+    data.forEach((row, i) => {
+      values[i] =
+        field && row[field] !== null && row[field] !== undefined
+          ? String(row[field])
+          : '';
+    });
+    setEditRowValues(values);
+    setDraftFieldName(field);
+    setIsEditMode(true);
+  };
+
+  const handleCancelEdit = () => {
+    setIsEditMode(false);
+    setDraftFieldName(addedFieldName || '');
+    setEditRowValues({});
+  };
+
+  const handleEditValueChange = (rowIndex, value) => {
+    setEditRowValues((prev) => ({ ...prev, [rowIndex]: value }));
+  };
+
+  const handleSaveEdits = async () => {
+    const fieldName = (addedFieldName || draftFieldName).trim();
+    if (!fieldName) {
+      alert('Please enter a field name for the new column.');
+      return;
+    }
+    if (columns.includes(fieldName) && fieldName !== addedFieldName) {
+      alert('This field name already exists. You can only add one new field.');
+      return;
+    }
+    if (addedFieldName && fieldName !== addedFieldName) {
+      alert('Only one custom field is allowed. You cannot change the field name.');
+      return;
+    }
+
+    const newData = data.map((row, i) => ({
+      ...row,
+      [fieldName]: editRowValues[i] ?? '',
+    }));
+
+    const newColumns = columns.includes(fieldName) ? columns : [...columns, fieldName];
+    const newColumnOrder = columnOrder.includes(fieldName)
+      ? columnOrder
+      : [...columnOrder, fieldName];
+
+    setIsSaving(true);
+    try {
+      let fileHandle = sourceFileHandle;
+      const saveFormat = getFileFormat(sourceFileName) || 'json';
+      if (!fileHandle && isFileSystemAccessSupported()) {
+        try {
+          const [handle] = await window.showSaveFilePicker({
+            suggestedName: ensureFileNameExtension(sourceFileName || 'data', saveFormat),
+            types: [getAcceptTypesForFormat(saveFormat)],
+          });
+          fileHandle = handle;
+          onSourceFileHandle?.(handle);
+        } catch (err) {
+          if (err.name === 'AbortError') {
+            setIsSaving(false);
+            return;
+          }
+        }
+      }
+
+      const result = await saveJsonToFile(newData, fileHandle, sourceFileName);
+      onDataUpdate(newData, newColumns);
+      setAddedFieldName(fieldName);
+      setColumnOrder(newColumnOrder);
+      setVisibleColumns((prev) => ({ ...prev, [fieldName]: true }));
+      setHeaderLabels((prev) => ({ ...prev, [fieldName]: fieldName }));
+      setIsEditMode(false);
+      setDraftFieldName(fieldName);
+
+      if (result.method === 'file') {
+        alert(`Saved to ${result.fileName}`);
+      } else {
+        alert(
+          `Downloaded ${result.fileName}. Use "browse files" when opening a file to save directly to the same file next time.`
+        );
+      }
+    } catch (err) {
+      console.error(err);
+      alert(err.message || 'Failed to save file.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const displayColumnsList =
+    isEditMode && activeCustomField && !visibleColumnsList.includes(activeCustomField)
+      ? [...visibleColumnsList, activeCustomField]
+      : visibleColumnsList;
+
   return (
     <div className="space-y-4">
       {/* Controls */}
@@ -573,9 +683,42 @@ const DataTable = ({ data, columns, onClearData }) => {
             <span>Clear Filters</span>
           </button>
 
+          {/* Edit / Save */}
+          {!isEditMode ? (
+            <button
+              type="button"
+              onClick={handleStartEdit}
+              className="btn-secondary flex items-center space-x-2"
+            >
+              <Pencil className="h-4 w-4" />
+              <span>Edit</span>
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={handleCancelEdit}
+                className="btn-secondary flex items-center space-x-2"
+                disabled={isSaving}
+              >
+                <X className="h-4 w-4" />
+                <span>Cancel</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveEdits}
+                className="btn-primary flex items-center space-x-2"
+                disabled={isSaving}
+              >
+                <Save className="h-4 w-4" />
+                <span>{isSaving ? 'Saving...' : 'Save'}</span>
+              </button>
+            </>
+          )}
+
           {/* Export Controls */}
           <ExportControls 
-            data={data} 
+            data={filteredAndSortedData} 
             columns={visibleColumnsList}
             headerLabels={headerLabels}
             valueMappings={valueMappings}
@@ -866,6 +1009,34 @@ const DataTable = ({ data, columns, onClearData }) => {
         )}
 
 
+        {/* Custom field edit panel */}
+        {isEditMode && (
+          <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+            <h3 className="font-medium text-amber-900 mb-2">Add / edit one custom field</h3>
+            <p className="text-sm text-amber-800 mb-3">
+              Enter one field name, then fill values in the table column. Save writes back to your JSON file.
+            </p>
+            <div className="max-w-md">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Field name
+              </label>
+              <input
+                type="text"
+                value={addedFieldName || draftFieldName}
+                onChange={(e) => setDraftFieldName(e.target.value)}
+                disabled={Boolean(addedFieldName)}
+                placeholder="e.g. remarks"
+                className="input-field text-sm w-full disabled:bg-gray-100 disabled:text-gray-600"
+              />
+              {addedFieldName && (
+                <p className="text-xs text-gray-500 mt-1">
+                  Field name is locked after first save. You can still edit values.
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Column Filters */}
         {showFilters && (
           <div className="mt-4 p-4 bg-white border border-gray-200 rounded-lg">
@@ -895,11 +1066,19 @@ const DataTable = ({ data, columns, onClearData }) => {
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>
-              {visibleColumnsList.map(column => (
+              {displayColumnsList.map(column => (
                 <th
                   key={column}
-                  className="table-header cursor-pointer hover:bg-gray-200 transition-colors duration-200 relative group"
-                  onClick={() => handleSort(column)}
+                  className={`table-header relative group ${
+                    isEditMode && column === activeCustomField
+                      ? 'bg-amber-100'
+                      : 'cursor-pointer hover:bg-gray-200 transition-colors duration-200'
+                  }`}
+                  onClick={() => {
+                    if (!(isEditMode && column === activeCustomField)) {
+                      handleSort(column);
+                    }
+                  }}
                   onMouseEnter={() => setHoveredColumn(column)}
                   onMouseLeave={() => setHoveredColumn(null)}
                 >
@@ -952,20 +1131,39 @@ const DataTable = ({ data, columns, onClearData }) => {
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
-            {paginatedData.map((row, index) => (
-              <tr key={index} className="hover:bg-gray-50">
-                {visibleColumnsList.map(column => (
-                  <td key={column} className="table-cell">
-                    <div className="max-w-xs truncate" title={String(row[column])}>
-                      {row[column] !== null && row[column] !== undefined 
-                        ? getDisplayValue(column, String(row[column]))
-                        : '-'
-                      }
-                    </div>
+            {paginatedData.map((row, index) => {
+              const dataRowIndex = getDataRowIndex(row);
+              return (
+              <tr key={`${dataRowIndex}-${index}`} className="hover:bg-gray-50">
+                {displayColumnsList.map(column => (
+                  <td
+                    key={column}
+                    className={`table-cell ${
+                      isEditMode && column === activeCustomField ? 'bg-amber-50' : ''
+                    }`}
+                  >
+                    {isEditMode && column === activeCustomField ? (
+                      <input
+                        type="text"
+                        value={editRowValues[dataRowIndex] ?? ''}
+                        onChange={(e) =>
+                          handleEditValueChange(dataRowIndex, e.target.value)
+                        }
+                        placeholder="Enter value..."
+                        className="input-field text-sm w-full min-w-[8rem]"
+                      />
+                    ) : (
+                      <div className="max-w-xs truncate" title={String(row[column])}>
+                        {row[column] !== null && row[column] !== undefined
+                          ? getDisplayValue(column, String(row[column]))
+                          : '-'}
+                      </div>
+                    )}
                   </td>
                 ))}
               </tr>
-            ))}
+            );
+            })}
           </tbody>
         </table>
       </div>

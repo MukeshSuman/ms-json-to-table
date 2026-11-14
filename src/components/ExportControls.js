@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Download, FileSpreadsheet, FileText, Settings, X } from 'lucide-react';
+import { FileSpreadsheet, FileText, Settings, X, Printer } from 'lucide-react';
 import { exportToExcel } from '../utils/excelExport';
 import { exportToPDF } from '../utils/pdfExport';
+import { printTable } from '../utils/tablePrint';
 
 const ExportControls = ({ data, columns, headerLabels = {}, valueMappings = {}, onClearData }) => {
   const [showExportSettings, setShowExportSettings] = useState(false);
@@ -17,7 +18,7 @@ const ExportControls = ({ data, columns, headerLabels = {}, valueMappings = {}, 
       enabled: false,
       count: 1
     },
-    minRowHeight: 20,
+    minRowHeight: 8,
     // Excel Settings
     includeHeaders: true,
     autoWidth: true
@@ -29,8 +30,12 @@ const ExportControls = ({ data, columns, headerLabels = {}, valueMappings = {}, 
   };
 
   const handlePDFExport = () => {
-    const filename = `data-export-${new Date().toISOString().split('T')[0]}.pdf`;
+    const filename = `table-export-${new Date().toISOString().split('T')[0]}.pdf`;
     exportToPDF(data, columns, filename, exportSettings, headerLabels, valueMappings);
+  };
+
+  const handlePrint = () => {
+    printTable(data, columns, headerLabels, valueMappings, exportSettings);
   };
 
   const updateExportSettings = (section, key, value) => {
@@ -92,11 +97,19 @@ const ExportControls = ({ data, columns, headerLabels = {}, valueMappings = {}, 
         </button>
 
         <button
+          onClick={handlePrint}
+          className="btn-secondary flex items-center space-x-2"
+        >
+          <Printer className="h-4 w-4" />
+          <span>Print</span>
+        </button>
+
+        <button
           onClick={handlePDFExport}
           className="btn-primary flex items-center space-x-2"
         >
           <FileText className="h-4 w-4" />
-          <span>Export PDF</span>
+          <span>Table as PDF</span>
         </button>
 
         <button

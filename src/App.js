@@ -7,16 +7,27 @@ function App() {
   const [data, setData] = useState([]);
   const [columns, setColumns] = useState([]);
   const [isDataLoaded, setIsDataLoaded] = useState(false);
+  const [sourceFileHandle, setSourceFileHandle] = useState(null);
+  const [sourceFileName, setSourceFileName] = useState('');
 
-  const handleDataLoad = useCallback((jsonData, columnKeys) => {
+  const handleDataLoad = useCallback((jsonData, columnKeys, fileHandle = null, fileName = '') => {
     setData(jsonData);
     setColumns(columnKeys);
+    setSourceFileHandle(fileHandle);
+    setSourceFileName(fileName);
     setIsDataLoaded(true);
+  }, []);
+
+  const handleDataUpdate = useCallback((jsonData, columnKeys) => {
+    setData(jsonData);
+    setColumns(columnKeys);
   }, []);
 
   const handleClearData = useCallback(() => {
     setData([]);
     setColumns([]);
+    setSourceFileHandle(null);
+    setSourceFileName('');
     setIsDataLoaded(false);
   }, []);
 
@@ -37,7 +48,7 @@ function App() {
             <div className="flex items-center space-x-4">
               <div className="flex items-center space-x-2 text-sm text-gray-500">
                 <Upload className="h-4 w-4" />
-                <span>Upload JSON</span>
+                <span>Upload File</span>
               </div>
               <div className="flex items-center space-x-2 text-sm text-gray-500">
                 <FileText className="h-4 w-4" />
@@ -54,7 +65,7 @@ function App() {
           {/* Upload Section */}
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
             <h2 className="text-lg font-semibold text-gray-900 mb-4">
-              Upload JSON File
+              Upload or Paste Data
             </h2>
             <JsonUploader onDataLoad={handleDataLoad} onClearData={handleClearData} />
           </div>
@@ -70,7 +81,16 @@ function App() {
                 </div>
               </div>
               <div className="overflow-x-auto">
-                <DataTable data={data} columns={columns} onClearData={handleClearData} />
+                <DataTable
+                  key={sourceFileName || 'data-table'}
+                  data={data}
+                  columns={columns}
+                  onDataUpdate={handleDataUpdate}
+                  sourceFileHandle={sourceFileHandle}
+                  sourceFileName={sourceFileName}
+                  onSourceFileHandle={setSourceFileHandle}
+                  onClearData={handleClearData}
+                />
               </div>
             </div>
           )}
@@ -82,10 +102,10 @@ function App() {
                 How to use this tool
               </h3>
               <ul className="text-blue-800 space-y-2">
-                <li>• Upload a JSON file containing an array of objects</li>
+                <li>• Upload a JSON, TSV, or CSV file, or paste JSON directly</li>
                 <li>• Use table controls to hide columns, sort, and filter data</li>
-                <li>• Export to Excel or PDF with customization options</li>
-                <li>• PDF export includes only the table data, not the full page</li>
+                <li>• Export to Excel, print the table, or save it as PDF</li>
+                <li>• Print and PDF use the current visible columns and filtered rows</li>
               </ul>
             </div>
           )}

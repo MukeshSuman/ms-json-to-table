@@ -1,150 +1,108 @@
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
+import { buildExportTableData, TABLE_UI_COLORS } from './tableExportView';
 
-export const exportToPDF = (data, columns, filename, settings, headerLabels = {}, valueMappings = {}) => {
+function getPageConfig(columnCount) {
+  if (columnCount > 16) {
+    return { format: 'a3', orientation: 'l', fontSize: 6, cellPadding: 2 };
+  }
+  if (columnCount > 10) {
+    return { format: 'a3', orientation: 'l', fontSize: 7, cellPadding: 2.5 };
+  }
+  if (columnCount > 7) {
+    return { format: 'a4', orientation: 'l', fontSize: 8, cellPadding: 3 };
+  }
+  return { format: 'a4', orientation: 'l', fontSize: 9, cellPadding: 3.5 };
+}
+
+function buildColumnStyles(columnCount, availableWidth) {
+  const cellWidth = availableWidth / columnCount;
+  const styles = {};
+  for (let i = 0; i < columnCount; i++) {
+    styles[i] = { cellWidth };
+  }
+  return styles;
+}
+
+const BORDER_WIDTH = 0.25;
+
+function drawHorizontalCellBorder(data) {
+  const { doc, cell } = data;
+  if (!cell) return;
+
+  doc.setDrawColor(...TABLE_UI_COLORS.border);
+  doc.setLineWidth(BORDER_WIDTH);
+  doc.line(
+    cell.x,
+    cell.y + cell.height,
+    cell.x + cell.width,
+    cell.y + cell.height
+  );
+}
+
+export const exportToPDF = (
+  data,
+  columns,
+  filename,
+  settings,
+  headerLabels = {},
+  valueMappings = {}
+) => {
   try {
-    // Create new PDF document
-    const doc = new jsPDF('l', 'mm', 'a4'); // Landscape orientation for better table display
-    
-    // Helper function to get display value with mapping
-    const getDisplayValue = (column, value) => {
-      if (valueMappings[column] && valueMappings[column][value] !== undefined) {
-        return valueMappings[column][value];
-      }
-      return value;
-    };
-
-    // Prepare table data with proper value mapping
-    let tableData = data.map(row => 
-      columns.map(col => {
-        const value = row[col];
-        if (value === null || value === undefined) {
-          return '-';
-        }
-        const stringValue = String(value);
-        return getDisplayValue(col, stringValue);
-      })
+    const { headers, rows } = buildExportTableData(
+      data,
+      columns,
+      headerLabels,
+      valueMappings,
+      settings
     );
 
-    // Prepare headers with custom labels
-    const headers = columns.map(col => headerLabels[col] || col);
+    const pageConfig = getPageConfig(headers.length);
+    const doc = new jsPDF(pageConfig.orientation, 'mm', pageConfig.format);
+    const margin = 10;
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const availableWidth = pageWidth - margin * 2;
+    const columnStyles = buildColumnStyles(headers.length, availableWidth);
 
-    // Add extra columns if enabled
-    if (settings.extraColumns.enabled) {
-      const extraColumnCount = settings.extraColumns.count;
-      const extraHeadings = settings.extraColumns.headings;
-      const emptyHeadings = settings.extraColumns.emptyHeadings;
-      
-      // Add extra columns to headers
-      const extraHeaders = [];
-      for (let i = 0; i < extraColumnCount; i++) {
-        extraHeaders.push(extraHeadings[i] || `Extra ${i + 1}`);
-      }
-      
-      // Add extra columns to data
-      tableData = tableData.map(row => [
-        ...row,
-        ...Array(extraColumnCount).fill('')
-      ]);
-      
-      // Update columns array for headers
-      const allColumns = [...headers, ...extraHeaders];
-      
-      // Add extra rows if enabled
-      if (settings.extraRows.enabled) {
-        const extraRowCount = settings.extraRows.count;
-        for (let i = 0; i < extraRowCount; i++) {
-          tableData.push(Array(allColumns.length).fill(''));
-        }
-      }
-      
-      // Generate table
-      doc.autoTable({
-        head: [allColumns],
-        body: tableData,
-        startY: 20,
-        styles: {
-          fontSize: 10,
-          cellPadding: 3,
-          minCellHeight: settings.minRowHeight,
-        },
-        headStyles: {
-          fillColor: [66, 139, 202], // Blue header
-          textColor: 255,
-          fontStyle: 'bold',
-        },
-        alternateRowStyles: {
-          fillColor: [245, 245, 245], // Light gray for alternate rows
-        },
-        margin: { top: 20, right: 20, bottom: 20, left: 20 },
-        didDrawPage: (data) => {
-          // Add page numbers
-          const pageCount = doc.internal.getNumberOfPages();
-          const pageSize = doc.internal.pageSize;
-          const pageHeight = pageSize.height || pageSize.getHeight();
-          
-          for (let i = 1; i <= pageCount; i++) {
-            doc.setPage(i);
-            doc.setFontSize(8);
-            doc.text(
-              `Page ${i} of ${pageCount}`,
-              pageSize.width - 30,
-              pageHeight - 10
-            );
-          }
-        }
-      });
-    } else {
-      // No extra columns, just regular table
-      let allColumns = [...headers];
-      
-      // Add extra rows if enabled
-      if (settings.extraRows.enabled) {
-        const extraRowCount = settings.extraRows.count;
-        for (let i = 0; i < extraRowCount; i++) {
-          tableData.push(Array(allColumns.length).fill(''));
-        }
-      }
-      
-      // Generate table
-      doc.autoTable({
-        head: [allColumns],
-        body: tableData,
-        startY: 20,
-        styles: {
-          fontSize: 10,
-          cellPadding: 3,
-          minCellHeight: settings.minRowHeight,
-        },
-        headStyles: {
-          fillColor: [66, 139, 202], // Blue header
-          textColor: 255,
-          fontStyle: 'bold',
-        },
-        alternateRowStyles: {
-          fillColor: [245, 245, 245], // Light gray for alternate rows
-        },
-        margin: { top: 20, right: 20, bottom: 20, left: 20 },
-        didDrawPage: (data) => {
-          // Add page numbers
-          const pageCount = doc.internal.getNumberOfPages();
-          const pageSize = doc.internal.pageSize;
-          const pageHeight = pageSize.height || pageSize.getHeight();
-          
-          for (let i = 1; i <= pageCount; i++) {
-            doc.setPage(i);
-            doc.setFontSize(8);
-            doc.text(
-              `Page ${i} of ${pageCount}`,
-              pageSize.width - 30,
-              pageHeight - 10
-            );
-          }
-        }
-      });
-    }
+    doc.autoTable({
+      head: [headers],
+      body: rows,
+      startY: 10,
+      tableWidth: availableWidth,
+      columnStyles,
+      theme: 'plain',
+      styles: {
+        fontSize: pageConfig.fontSize,
+        cellPadding: pageConfig.cellPadding,
+        minCellHeight: 8,
+        overflow: 'linebreak',
+        valign: 'top',
+        halign: 'left',
+        fillColor: TABLE_UI_COLORS.bodyBg,
+        textColor: TABLE_UI_COLORS.bodyText,
+        lineWidth: 0,
+      },
+      headStyles: {
+        fillColor: TABLE_UI_COLORS.headerBg,
+        textColor: TABLE_UI_COLORS.headerText,
+        fontStyle: 'bold',
+        fontSize: pageConfig.fontSize,
+        overflow: 'linebreak',
+        minCellHeight: 9,
+        halign: 'left',
+        lineWidth: 0,
+      },
+      bodyStyles: {
+        fillColor: TABLE_UI_COLORS.bodyBg,
+        textColor: TABLE_UI_COLORS.bodyText,
+        lineWidth: 0,
+      },
+      margin: { top: 10, right: margin, bottom: 12, left: margin },
+      showHead: 'everyPage',
+      rowPageBreak: 'auto',
+      didDrawCell: drawHorizontalCellBorder,
+    });
 
-    // Save the PDF
     doc.save(filename);
   } catch (error) {
     console.error('Error exporting to PDF:', error);
