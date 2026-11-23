@@ -102,7 +102,7 @@ function App() {
                 How to use this tool
               </h3>
               <ul className="text-blue-800 space-y-2">
-                <li>• Upload a JSON, TSV, or CSV file, or paste JSON directly</li>
+                <li>• Upload a JSON/TSV/CSV file, paste JSON, or select a folder and pick a filename postfix group</li>
                 <li>• Use table controls to hide columns, sort, and filter data</li>
                 <li>• Export to Excel, print the table, or save it as PDF</li>
                 <li>• Print and PDF use the current visible columns and filtered rows</li>

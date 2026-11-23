@@ -95,7 +95,7 @@ dist
 
 # Gatsby files
 .cache/
-public
+# NOTE: Do not ignore /public here — this is a CRA app and needs public/index.html tracked.
 
 # Storybook build outputs
 .out
@@ -104,6 +104,14 @@ public
 # Temporary folders
 tmp/
 temp/
+
+# Local / sensitive data dumps — never commit real exports
+*_teachers_*.json
+*teachers*.json
+rahika_*.json
+*.local.json
+data/*.json
+!sample-data.json
 
 # Editor directories and files
 .vscode/

@@ -17,12 +17,37 @@ import {
   Save,
   Download,
   Upload,
-  Pencil
+  Pencil,
+  ListFilter,
+  Check,
+  ChevronRight,
+  CornerDownRight,
+  FolderOpen
 } from 'lucide-react';
 import ExportControls from './ExportControls';
 import { saveJsonToFile, isFileSystemAccessSupported } from '../utils/jsonFileSave';
 import { compareValues } from '../utils/sortCompare';
 import { getFileFormat, getAcceptTypesForFormat, ensureFileNameExtension } from '../utils/tabularFile';
+import {
+  detectColumnValueType,
+  findSampleValue,
+  getKeysAtPath,
+  resolveByPath,
+  formatResolvedValue,
+  pathToLabel,
+  canGoDeeper,
+  MAX_NEST_DEPTH,
+} from '../utils/nestedValue';
+import {
+  listSettingPresets,
+  saveSettingPreset,
+  deleteSettingPreset,
+  clearAllSettingPresets,
+  renameSettingPreset,
+  formatPresetDate,
+  sanitizeSettingsFileName,
+  downloadSettingsJson,
+} from '../utils/tableSettingsStore';
 
 const PAGE_SIZE_OPTIONS = [100, 200, 500, 1000, 5000, 'ALL'];
 const DEFAULT_PAGE_SIZE = 1000;
@@ -58,8 +83,14 @@ const DataTable = ({
   const [selectedColumnForMapping, setSelectedColumnForMapping] = useState(null);
   const [valueMappings, setValueMappings] = useState({});
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
+  const [showSettingsPanel, setShowSettingsPanel] = useState(false);
   const [showSettingsPreview, setShowSettingsPreview] = useState(false);
   const [settingsTextarea, setSettingsTextarea] = useState('');
+  const [settingPresets, setSettingPresets] = useState([]);
+  const [presetName, setPresetName] = useState('');
+  const [activePresetId, setActivePresetId] = useState(null);
+  const [renamingPresetId, setRenamingPresetId] = useState(null);
+  const [renamePresetValue, setRenamePresetValue] = useState('');
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [currentPage, setCurrentPage] = useState(1);
   const settingsMenuRef = useRef(null);
@@ -68,6 +99,14 @@ const DataTable = ({
   const [draftFieldName, setDraftFieldName] = useState('');
   const [editRowValues, setEditRowValues] = useState({});
   const [isSaving, setIsSaving] = useState(false);
+  const [columnMenuOpen, setColumnMenuOpen] = useState(null);
+  const [columnMenuPosition, setColumnMenuPosition] = useState({ top: 0, left: 0 });
+  const [columnDropdownEnabled, setColumnDropdownEnabled] = useState({});
+  const [columnDropdownValues, setColumnDropdownValues] = useState({});
+  const [dropdownValueSearch, setDropdownValueSearch] = useState('');
+  const [columnValuePaths, setColumnValuePaths] = useState({});
+  const [nestedBrowsePath, setNestedBrowsePath] = useState([]);
+  const columnMenuRef = useRef(null);
 
   // Click outside handler for settings menu
   useEffect(() => {
@@ -86,6 +125,50 @@ const DataTable = ({
     };
   }, [showSettingsMenu]);
 
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (columnMenuRef.current && !columnMenuRef.current.contains(event.target)) {
+        setColumnMenuOpen(null);
+        setDropdownValueSearch('');
+        setNestedBrowsePath([]);
+      }
+    };
+
+    if (columnMenuOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [columnMenuOpen]);
+
+  const getResolvedRawValue = (row, column) => {
+    const path = columnValuePaths[column] || [];
+    if (!path.length) {
+      return row?.[column];
+    }
+    return resolveByPath(row?.[column], path);
+  };
+
+  const getCellText = (row, column) => {
+    const resolved = getResolvedRawValue(row, column);
+    const formatted = formatResolvedValue(resolved);
+    if (formatted === '-') {
+      return '-';
+    }
+    if (valueMappings[column] && valueMappings[column][formatted] !== undefined) {
+      return valueMappings[column][formatted];
+    }
+    if (
+      valueMappings[column] &&
+      valueMappings[column][String(resolved)] !== undefined
+    ) {
+      return valueMappings[column][String(resolved)];
+    }
+    return formatted;
+  };
+
   // Filter and sort data
   const filteredAndSortedData = useMemo(() => {
     // Shallow copy so in-place sort never mutates parent state and so pagination
@@ -94,18 +177,30 @@ const DataTable = ({
 
     // Apply search filter
     if (searchTerm) {
-      filteredData = filteredData.filter(row =>
-        Object.values(row).some(value =>
-          String(value).toLowerCase().includes(searchTerm.toLowerCase())
+      const term = searchTerm.toLowerCase();
+      filteredData = filteredData.filter((row) =>
+        columns.some((column) =>
+          String(getCellText(row, column)).toLowerCase().includes(term)
         )
       );
     }
 
-    // Apply column filters
+    // Apply column text filters
     Object.entries(filters).forEach(([key, value]) => {
       if (value) {
-        filteredData = filteredData.filter(row =>
-          String(row[key]).toLowerCase().includes(value.toLowerCase())
+        const needle = value.toLowerCase();
+        filteredData = filteredData.filter((row) =>
+          String(getCellText(row, key)).toLowerCase().includes(needle)
+        );
+      }
+    });
+
+    // Apply column dropdown exact-match filters
+    Object.entries(columnDropdownValues).forEach(([key, selected]) => {
+      if (selected && selected.length > 0) {
+        const selectedSet = new Set(selected);
+        filteredData = filteredData.filter((row) =>
+          selectedSet.has(String(getCellText(row, key)))
         );
       }
     });
@@ -113,12 +208,16 @@ const DataTable = ({
     // Apply sorting (numeric-aware for columns like admissionNumber)
     if (sortConfig.key) {
       filteredData.sort((a, b) =>
-        compareValues(a[sortConfig.key], b[sortConfig.key], sortConfig.direction)
+        compareValues(
+          getCellText(a, sortConfig.key),
+          getCellText(b, sortConfig.key),
+          sortConfig.direction
+        )
       );
     }
 
     return filteredData;
-  }, [data, searchTerm, filters, sortConfig]);
+  }, [data, columns, searchTerm, filters, columnDropdownValues, columnValuePaths, valueMappings, sortConfig]);
 
   // Pagination
   const totalFiltered = filteredAndSortedData.length;
@@ -176,11 +275,116 @@ const DataTable = ({
       ...prev,
       [column]: value
     }));
+    setCurrentPage(1);
   };
 
   const clearFilters = () => {
     setFilters({});
     setSearchTerm('');
+    setColumnDropdownValues({});
+    setColumnDropdownEnabled({});
+    setColumnMenuOpen(null);
+    setDropdownValueSearch('');
+  };
+
+  const isColumnFilterActive = (column) => {
+    const hasSearch = Boolean(filters[column]);
+    const hasDropdown = (columnDropdownValues[column] || []).length > 0;
+    const hasNestedPath = (columnValuePaths[column] || []).length > 0;
+    return hasSearch || hasDropdown || hasNestedPath;
+  };
+
+  const toggleColumnMenu = (column, e) => {
+    e.stopPropagation();
+    if (columnMenuOpen === column) {
+      setColumnMenuOpen(null);
+      setDropdownValueSearch('');
+      setNestedBrowsePath([]);
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const menuWidth = 320;
+    const left = Math.min(
+      Math.max(8, rect.right - menuWidth),
+      window.innerWidth - menuWidth - 8
+    );
+    setColumnMenuPosition({
+      top: rect.bottom + 6,
+      left,
+    });
+    setColumnMenuOpen(column);
+    setDropdownValueSearch('');
+    setNestedBrowsePath(columnValuePaths[column] || []);
+  };
+
+  const setColumnRootPath = (column, path) => {
+    setColumnValuePaths((prev) => {
+      if (!path.length) {
+        const next = { ...prev };
+        delete next[column];
+        return next;
+      }
+      return { ...prev, [column]: path };
+    });
+    setColumnDropdownValues((prev) => {
+      const next = { ...prev };
+      delete next[column];
+      return next;
+    });
+  };
+
+  const clearColumnRootPath = (column) => {
+    setColumnValuePaths((prev) => {
+      const next = { ...prev };
+      delete next[column];
+      return next;
+    });
+    setNestedBrowsePath([]);
+  };
+
+  const toggleColumnDropdownMode = (column) => {
+    setColumnDropdownEnabled((prev) => {
+      const nextEnabled = !prev[column];
+      if (!nextEnabled) {
+        setColumnDropdownValues((values) => {
+          const next = { ...values };
+          delete next[column];
+          return next;
+        });
+      }
+      return { ...prev, [column]: nextEnabled };
+    });
+  };
+
+  const toggleDropdownValue = (column, value) => {
+    setColumnDropdownValues((prev) => {
+      const current = prev[column] || [];
+      const exists = current.includes(value);
+      const nextValues = exists
+        ? current.filter((item) => item !== value)
+        : [...current, value];
+      if (nextValues.length === 0) {
+        const next = { ...prev };
+        delete next[column];
+        return next;
+      }
+      return { ...prev, [column]: nextValues };
+    });
+    setCurrentPage(1);
+  };
+
+  const clearColumnFilter = (column) => {
+    setFilters((prev) => {
+      const next = { ...prev };
+      delete next[column];
+      return next;
+    });
+    setColumnDropdownValues((prev) => {
+      const next = { ...prev };
+      delete next[column];
+      return next;
+    });
+    setCurrentPage(1);
   };
 
   const moveColumn = (fromIndex, toIndex) => {
@@ -266,21 +470,126 @@ const DataTable = ({
   };
 
   const getUniqueValues = (column) => {
-    const values = [...new Set(data.map(row => String(row[column])))];
+    const values = [
+      ...new Set(
+        data.map((row) => {
+          const text = getCellText(row, column);
+          return text === '-' ? '' : String(text);
+        })
+      ),
+    ];
     return values.sort();
   };
 
   // Settings persistence functions
+  const buildCurrentSettingsSnapshot = () => ({
+    visibleColumns,
+    columnOrder,
+    headerLabels,
+    valueMappings,
+    columnValuePaths,
+    timestamp: new Date().toISOString(),
+  });
+
+  const refreshSettingPresets = () => {
+    setSettingPresets(listSettingPresets());
+  };
+
   const saveCurrentSettings = () => {
-    const settings = {
-      visibleColumns,
-      columnOrder,
-      headerLabels,
-      valueMappings,
-      timestamp: new Date().toISOString()
-    };
+    const settings = buildCurrentSettingsSnapshot();
     localStorage.setItem('tableSettings', JSON.stringify(settings));
     alert('Settings saved successfully!');
+  };
+
+  const openSettingsPanel = () => {
+    refreshSettingPresets();
+    setShowSettingsPanel(true);
+    setShowSettingsMenu(false);
+  };
+
+  const handleSaveNamedPreset = () => {
+    try {
+      const preset = saveSettingPreset(presetName, buildCurrentSettingsSnapshot());
+      setPresetName('');
+      setActivePresetId(preset.id);
+      refreshSettingPresets();
+      alert(`Saved settings as "${preset.name}"`);
+    } catch (err) {
+      alert(err.message || 'Failed to save settings');
+    }
+  };
+
+  const handleLoadNamedPreset = (preset) => {
+    if (!preset?.settings) {
+      alert('Invalid settings preset');
+      return;
+    }
+    applySettings(preset.settings);
+    setActivePresetId(preset.id);
+    alert(`Loaded "${preset.name}"`);
+  };
+
+  const handleUpdateNamedPreset = (preset) => {
+    try {
+      const updated = saveSettingPreset(
+        preset.name,
+        buildCurrentSettingsSnapshot(),
+        preset.id
+      );
+      setActivePresetId(updated.id);
+      refreshSettingPresets();
+      alert(`Updated "${updated.name}" with current settings`);
+    } catch (err) {
+      alert(err.message || 'Failed to update settings');
+    }
+  };
+
+  const handleExportNamedPreset = (preset) => {
+    if (!preset?.settings) {
+      alert('Invalid settings preset');
+      return;
+    }
+    const fileName = sanitizeSettingsFileName(preset.name);
+    downloadSettingsJson(
+      {
+        ...preset.settings,
+        name: preset.name,
+        timestamp: preset.updatedAt || preset.createdAt || new Date().toISOString(),
+      },
+      fileName
+    );
+  };
+
+  const handleDeleteNamedPreset = (preset) => {
+    if (!confirm(`Delete settings "${preset.name}"?`)) return;
+    deleteSettingPreset(preset.id);
+    if (activePresetId === preset.id) {
+      setActivePresetId(null);
+    }
+    refreshSettingPresets();
+  };
+
+  const handleClearAllNamedPresets = () => {
+    if (!confirm('Clear all named settings presets from this browser?')) return;
+    clearAllSettingPresets();
+    setActivePresetId(null);
+    refreshSettingPresets();
+  };
+
+  const handleStartRenamePreset = (preset) => {
+    setRenamingPresetId(preset.id);
+    setRenamePresetValue(preset.name);
+  };
+
+  const handleCommitRenamePreset = (preset) => {
+    try {
+      renameSettingPreset(preset.id, renamePresetValue);
+      setRenamingPresetId(null);
+      setRenamePresetValue('');
+      refreshSettingPresets();
+    } catch (err) {
+      alert(err.message || 'Failed to rename');
+    }
   };
 
   const loadSavedSettings = () => {
@@ -288,59 +597,7 @@ const DataTable = ({
     if (savedSettings) {
       try {
         const settings = JSON.parse(savedSettings);
-        
-        // Apply settings that match current columns
-        const newVisibleColumns = {};
-        const newColumnOrder = [];
-        const newHeaderLabels = {};
-        const newValueMappings = {};
-        
-        // Apply visible columns and column order
-        columns.forEach(col => {
-          if (settings.visibleColumns && settings.visibleColumns[col] !== undefined) {
-            newVisibleColumns[col] = settings.visibleColumns[col];
-          } else {
-            newVisibleColumns[col] = true; // Default to visible
-          }
-        });
-        
-        // Apply column order (only for columns that exist)
-        if (settings.columnOrder) {
-          settings.columnOrder.forEach(col => {
-            if (columns.includes(col)) {
-              newColumnOrder.push(col);
-            }
-          });
-        }
-        
-        // Add any new columns that weren't in saved settings
-        columns.forEach(col => {
-          if (!newColumnOrder.includes(col)) {
-            newColumnOrder.push(col);
-          }
-        });
-        
-        // Apply header labels
-        columns.forEach(col => {
-          if (settings.headerLabels && settings.headerLabels[col]) {
-            newHeaderLabels[col] = settings.headerLabels[col];
-          } else {
-            newHeaderLabels[col] = col;
-          }
-        });
-        
-        // Apply value mappings
-        columns.forEach(col => {
-          if (settings.valueMappings && settings.valueMappings[col]) {
-            newValueMappings[col] = settings.valueMappings[col];
-          }
-        });
-        
-        setVisibleColumns(newVisibleColumns);
-        setColumnOrder(newColumnOrder);
-        setHeaderLabels(newHeaderLabels);
-        setValueMappings(newValueMappings);
-        
+        applySettings(settings);
         alert('Settings loaded successfully!');
       } catch (error) {
         console.error('Error loading settings:', error);
@@ -359,22 +616,9 @@ const DataTable = ({
   };
 
   const exportSettings = () => {
-    const settings = {
-      visibleColumns,
-      columnOrder,
-      headerLabels,
-      valueMappings,
-      timestamp: new Date().toISOString()
-    };
-    
-    const dataStr = JSON.stringify(settings, null, 2);
-    const dataBlob = new Blob([dataStr], { type: 'application/json' });
-    const url = URL.createObjectURL(dataBlob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `table-settings-${new Date().toISOString().split('T')[0]}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+    const settings = buildCurrentSettingsSnapshot();
+    const fileName = `table-settings-${new Date().toISOString().split('T')[0]}.json`;
+    downloadSettingsJson(settings, fileName);
   };
 
   const importSettings = (event) => {
@@ -401,6 +645,7 @@ const DataTable = ({
     const newColumnOrder = [];
     const newHeaderLabels = {};
     const newValueMappings = {};
+    const newColumnValuePaths = {};
     
     columns.forEach(col => {
       if (settings.visibleColumns && settings.visibleColumns[col] !== undefined) {
@@ -436,22 +681,20 @@ const DataTable = ({
       if (settings.valueMappings && settings.valueMappings[col]) {
         newValueMappings[col] = settings.valueMappings[col];
       }
+      if (settings.columnValuePaths && Array.isArray(settings.columnValuePaths[col])) {
+        newColumnValuePaths[col] = settings.columnValuePaths[col];
+      }
     });
     
     setVisibleColumns(newVisibleColumns);
     setColumnOrder(newColumnOrder);
     setHeaderLabels(newHeaderLabels);
     setValueMappings(newValueMappings);
+    setColumnValuePaths(newColumnValuePaths);
   };
 
   const showSettingsPreviewModal = () => {
-    const settings = {
-      visibleColumns,
-      columnOrder,
-      headerLabels,
-      valueMappings,
-      timestamp: new Date().toISOString()
-    };
+    const settings = buildCurrentSettingsSnapshot();
     setSettingsTextarea(JSON.stringify(settings, null, 2));
     setShowSettingsPreview(true);
   };
@@ -524,6 +767,18 @@ const DataTable = ({
   };
 
   const visibleColumnsList = columnOrder.filter(col => visibleColumns[col]);
+
+  const exportReadyData = useMemo(
+    () =>
+      filteredAndSortedData.map((row) => {
+        const next = { ...row };
+        visibleColumnsList.forEach((column) => {
+          next[column] = getCellText(row, column);
+        });
+        return next;
+      }),
+    [filteredAndSortedData, visibleColumnsList, columnValuePaths, valueMappings]
+  );
 
   const activeCustomField = addedFieldName || draftFieldName.trim();
 
@@ -718,10 +973,10 @@ const DataTable = ({
 
           {/* Export Controls */}
           <ExportControls 
-            data={filteredAndSortedData} 
+            data={exportReadyData} 
             columns={visibleColumnsList}
             headerLabels={headerLabels}
-            valueMappings={valueMappings}
+            valueMappings={{}}
             onClearData={onClearData}
           />
 
@@ -741,6 +996,14 @@ const DataTable = ({
                   <h3 className="font-medium text-gray-900 mb-3">Table Settings</h3>
                   
                   <div className="space-y-3">
+                    <button
+                      onClick={openSettingsPanel}
+                      className="w-full flex items-center space-x-2 px-3 py-2 text-sm text-primary-700 bg-primary-50 hover:bg-primary-100 rounded font-medium"
+                    >
+                      <FolderOpen className="h-4 w-4" />
+                      <span>Open Settings</span>
+                    </button>
+
                     {/* Save Settings */}
                     <button
                       onClick={() => {
@@ -822,6 +1085,194 @@ const DataTable = ({
             )}
           </div>
         </div>
+
+        {/* Named Settings Panel */}
+        {showSettingsPanel && (
+          <div className="mt-4 p-4 bg-white border border-gray-200 rounded-lg space-y-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="font-medium text-gray-900">Open Settings</h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  Save multiple named table setups in this browser and load any one anytime.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSettingsPanel(false)}
+                className="text-gray-400 hover:text-gray-600 p-1"
+                title="Close"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900 space-y-1">
+              <p className="font-medium">What you can do here</p>
+              <ul className="list-disc pl-5 space-y-0.5 text-blue-800">
+                <li>Save the current column/filter setup with a custom name</li>
+                <li>Keep many presets (not just one) in localStorage</li>
+                <li>Click any preset to load it into the table</li>
+                <li>Use Update on a preset to overwrite it with your latest column/show-hide changes</li>
+                <li>Export any preset as JSON (filename from preset name; unsafe characters become dashes)</li>
+                <li>Rename or delete individual presets, or clear all</li>
+              </ul>
+              <p className="text-xs text-blue-700 pt-1">
+                Note: localStorage does not auto-expire. Presets stay until you delete them or clear browser site data.
+                Existing Save/Load/Export/Import menu options still work as before.
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-gray-200 p-3 space-y-2">
+              <label className="block text-sm font-medium text-gray-700">
+                Save current settings as
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <input
+                  type="text"
+                  value={presetName}
+                  onChange={(e) => setPresetName(e.target.value)}
+                  placeholder="e.g. Teachers transfer view"
+                  className="input-field flex-1 min-w-[14rem] text-sm"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSaveNamedPreset();
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={handleSaveNamedPreset}
+                  className="btn-primary flex items-center space-x-2 text-sm"
+                >
+                  <Save className="h-4 w-4" />
+                  <span>Save</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="border border-gray-200 rounded-lg overflow-hidden">
+              <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 flex items-center justify-between gap-2">
+                <p className="text-xs font-medium text-gray-600 uppercase tracking-wide">
+                  Saved presets ({settingPresets.length})
+                </p>
+                {settingPresets.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleClearAllNamedPresets}
+                    className="text-xs text-red-600 hover:text-red-700 font-medium"
+                  >
+                    Clear all
+                  </button>
+                )}
+              </div>
+
+              {settingPresets.length === 0 ? (
+                <p className="px-3 py-4 text-sm text-gray-500">
+                  No named presets yet. Save current settings above.
+                </p>
+              ) : (
+                <ul className="divide-y divide-gray-100 max-h-72 overflow-y-auto">
+                  {settingPresets.map((preset) => {
+                    const isActive = activePresetId === preset.id;
+                    const isRenaming = renamingPresetId === preset.id;
+                    return (
+                      <li
+                        key={preset.id}
+                        className={`px-3 py-3 flex flex-wrap items-start justify-between gap-3 ${
+                          isActive ? 'bg-primary-50' : 'bg-white'
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          {isRenaming ? (
+                            <div className="flex flex-wrap gap-2">
+                              <input
+                                type="text"
+                                value={renamePresetValue}
+                                onChange={(e) => setRenamePresetValue(e.target.value)}
+                                className="input-field text-sm flex-1 min-w-[10rem]"
+                                autoFocus
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') handleCommitRenamePreset(preset);
+                                  if (e.key === 'Escape') {
+                                    setRenamingPresetId(null);
+                                    setRenamePresetValue('');
+                                  }
+                                }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleCommitRenamePreset(preset)}
+                                className="text-sm text-primary-700 font-medium"
+                              >
+                                Done
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleLoadNamedPreset(preset)}
+                              className="text-left w-full"
+                            >
+                              <p className="font-medium text-gray-900 truncate">
+                                {preset.name}
+                                {isActive && (
+                                  <span className="ml-2 text-xs font-normal text-primary-700">
+                                    loaded
+                                  </span>
+                                )}
+                              </p>
+                              <p className="text-xs text-gray-500 mt-0.5">
+                                Updated {formatPresetDate(preset.updatedAt || preset.createdAt)}
+                              </p>
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleLoadNamedPreset(preset)}
+                            className="px-2 py-1 text-xs font-medium rounded border border-primary-200 text-primary-700 hover:bg-primary-50"
+                          >
+                            Load
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateNamedPreset(preset)}
+                            className="px-2 py-1 text-xs font-medium rounded border border-amber-200 text-amber-800 hover:bg-amber-50"
+                            title="Overwrite this preset with current table settings"
+                          >
+                            Update
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleExportNamedPreset(preset)}
+                            className="p-1.5 rounded text-gray-500 hover:text-primary-700 hover:bg-primary-50"
+                            title={`Export as ${sanitizeSettingsFileName(preset.name)}`}
+                          >
+                            <Download className="h-4 w-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleStartRenamePreset(preset)}
+                            className="px-2 py-1 text-xs font-medium rounded border border-gray-200 text-gray-600 hover:bg-gray-50"
+                          >
+                            Rename
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteNamedPreset(preset)}
+                            className="p-1.5 rounded text-gray-500 hover:text-red-600 hover:bg-red-50"
+                            title="Delete"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Column Settings Panel */}
         {showColumnSettings && (
@@ -1061,12 +1512,277 @@ const DataTable = ({
         )}
       </div>
 
+      {/* Column drilldown menu (fixed so table overflow does not clip it) */}
+      {columnMenuOpen && (() => {
+        const column = columnMenuOpen;
+        const dropdownEnabled = Boolean(columnDropdownEnabled[column]);
+        const selectedValues = columnDropdownValues[column] || [];
+        const uniqueValues = getUniqueValues(column);
+        const filteredUniqueValues = dropdownValueSearch
+          ? uniqueValues.filter((value) =>
+              value.toLowerCase().includes(dropdownValueSearch.toLowerCase())
+            )
+          : uniqueValues;
+        const typeInfo = detectColumnValueType(data, column);
+        const sampleRoot = findSampleValue(data, column, nestedBrowsePath);
+        const nestedInfo = getKeysAtPath(sampleRoot, nestedBrowsePath);
+        const activePath = columnValuePaths[column] || [];
+        const browsePreview = formatResolvedValue(
+          resolveByPath(sampleRoot, nestedBrowsePath)
+        );
+        const pathSameAsActive =
+          JSON.stringify(nestedBrowsePath) === JSON.stringify(activePath);
+        const typeBadgeLabel = nestedInfo.mapped
+          ? `${nestedInfo.type} (mapped)`
+          : nestedInfo.type;
+
+        return (
+          <div
+            ref={columnMenuRef}
+            className="fixed w-80 bg-white border border-gray-200 rounded-lg shadow-xl z-[60] text-left max-h-[80vh] overflow-y-auto"
+            style={{ top: columnMenuPosition.top, left: columnMenuPosition.left }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-3 border-b border-gray-100">
+              <p className="text-sm font-semibold text-gray-900 truncate">
+                {headerLabels[column] || column}
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 font-medium">
+                  {typeInfo.primary}
+                </span>
+                {Object.entries(typeInfo.counts)
+                  .filter(([type]) => type !== typeInfo.primary)
+                  .slice(0, 3)
+                  .map(([type, count]) => (
+                    <span
+                      key={type}
+                      className="text-[11px] px-2 py-0.5 rounded-full bg-gray-50 text-gray-500"
+                    >
+                      {type}:{count}
+                    </span>
+                  ))}
+              </div>
+            </div>
+
+            <div className="p-3 space-y-3 border-b border-gray-100">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
+                  Nested value
+                </p>
+                <span className="text-[11px] text-gray-400">
+                  Level {nestedBrowsePath.length}/{MAX_NEST_DEPTH}
+                </span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1 text-xs text-gray-600">
+                <button
+                  type="button"
+                  onClick={() => setNestedBrowsePath([])}
+                  className={`px-1.5 py-0.5 rounded ${
+                    nestedBrowsePath.length === 0
+                      ? 'bg-primary-100 text-primary-700'
+                      : 'hover:bg-gray-100'
+                  }`}
+                >
+                  root
+                </button>
+                {nestedBrowsePath.map((segment, index) => (
+                  <React.Fragment key={`${segment}-${index}`}>
+                    <ChevronRight className="h-3 w-3 text-gray-400" />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setNestedBrowsePath(nestedBrowsePath.slice(0, index + 1))
+                      }
+                      className={`px-1.5 py-0.5 rounded max-w-[7rem] truncate ${
+                        index === nestedBrowsePath.length - 1
+                          ? 'bg-primary-100 text-primary-700'
+                          : 'hover:bg-gray-100'
+                      }`}
+                      title={segment}
+                    >
+                      {segment}
+                    </button>
+                  </React.Fragment>
+                ))}
+              </div>
+
+              <div className="rounded-lg border border-gray-200 bg-gray-50 p-2">
+                <p className="text-[11px] text-gray-500 mb-1">
+                  Current type:{' '}
+                  <span className="font-medium text-gray-700">{typeBadgeLabel}</span>
+                </p>
+                <p className="text-xs text-gray-800 break-words" title={browsePreview}>
+                  {browsePreview}
+                </p>
+              </div>
+
+              {nestedInfo.options.length > 0 && canGoDeeper(nestedBrowsePath) ? (
+                <div className="border border-gray-200 rounded-lg overflow-hidden max-h-40 overflow-y-auto">
+                  {nestedInfo.options.map((option) => (
+                    <button
+                      key={option.segment}
+                      type="button"
+                      onClick={() =>
+                        setNestedBrowsePath([...nestedBrowsePath, option.segment])
+                      }
+                      className="w-full flex items-center justify-between gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50 border-b border-gray-100 last:border-b-0"
+                    >
+                      <span className="min-w-0">
+                        <span className="block font-medium text-gray-800 truncate">
+                          {option.label}
+                        </span>
+                        <span className="block text-[11px] text-gray-500 truncate">
+                          {option.childType} · {option.preview}
+                        </span>
+                      </span>
+                      <ChevronRight className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+                    </button>
+                  ))}
+                </div>
+              ) : nestedInfo.type === 'object' || nestedInfo.type === 'array' ? (
+                <p className="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1.5">
+                  Max {MAX_NEST_DEPTH} levels reached. Set this as root or go back.
+                </p>
+              ) : null}
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setColumnRootPath(column, nestedBrowsePath)}
+                  disabled={pathSameAsActive}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50"
+                >
+                  <CornerDownRight className="h-3.5 w-3.5" />
+                  Set as root
+                </button>
+                {nestedBrowsePath.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setNestedBrowsePath(nestedBrowsePath.slice(0, -1))
+                    }
+                    className="px-2.5 py-1.5 text-xs font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200"
+                  >
+                    Back
+                  </button>
+                )}
+                {activePath.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => clearColumnRootPath(column)}
+                    className="px-2.5 py-1.5 text-xs font-medium rounded-md text-red-600 hover:bg-red-50"
+                  >
+                    Reset root
+                  </button>
+                )}
+              </div>
+
+              {activePath.length > 0 && (
+                <p className="text-[11px] text-primary-700 bg-primary-50 rounded px-2 py-1.5">
+                  Showing: {pathToLabel(column, activePath)}
+                </p>
+              )}
+            </div>
+
+            <div className="p-3 space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Search
+                </label>
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-gray-400" />
+                  <input
+                    type="text"
+                    value={filters[column] || ''}
+                    onChange={(e) => handleFilterChange(column, e.target.value)}
+                    placeholder="Type to filter..."
+                    className={`w-full pl-8 pr-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
+                      filters[column]
+                        ? 'border-primary-400 bg-primary-50'
+                        : 'border-gray-300'
+                    }`}
+                  />
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={dropdownEnabled}
+                  onChange={() => toggleColumnDropdownMode(column)}
+                  className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                />
+                <span>Use as dropdown</span>
+              </label>
+
+              {dropdownEnabled && (
+                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                  <div className="p-2 border-b border-gray-100 bg-gray-50">
+                    <input
+                      type="text"
+                      value={dropdownValueSearch}
+                      onChange={(e) => setDropdownValueSearch(e.target.value)}
+                      placeholder="Search values..."
+                      className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-primary-500"
+                    />
+                  </div>
+                  <div className="max-h-48 overflow-y-auto">
+                    {filteredUniqueValues.length === 0 ? (
+                      <p className="px-3 py-2 text-xs text-gray-500">No values found</p>
+                    ) : (
+                      filteredUniqueValues.map((value) => {
+                        const selected = selectedValues.includes(value);
+                        return (
+                          <button
+                            key={value}
+                            type="button"
+                            onClick={() => toggleDropdownValue(column, value)}
+                            className={`w-full flex items-center justify-between gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50 ${
+                              selected ? 'bg-primary-50 text-primary-800' : 'text-gray-700'
+                            }`}
+                          >
+                            <span className="truncate" title={value}>
+                              {value || '(empty)'}
+                            </span>
+                            {selected && <Check className="h-3.5 w-3.5 shrink-0" />}
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                  {selectedValues.length > 0 && (
+                    <div className="px-3 py-2 border-t border-gray-100 text-xs text-primary-700 bg-primary-50">
+                      {selectedValues.length} selected
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {(filters[column] || selectedValues.length > 0) && (
+                <button
+                  type="button"
+                  onClick={() => clearColumnFilter(column)}
+                  className="text-xs text-red-600 hover:text-red-700 font-medium"
+                >
+                  Clear this column filter
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Table */}
       <div className="overflow-x-auto">
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>
-              {displayColumnsList.map(column => (
+              {displayColumnsList.map(column => {
+                const columnActive = isColumnFilterActive(column);
+
+                return (
                 <th
                   key={column}
                   className={`table-header relative group ${
@@ -1082,9 +1798,16 @@ const DataTable = ({
                   onMouseEnter={() => setHoveredColumn(column)}
                   onMouseLeave={() => setHoveredColumn(null)}
                 >
-                  <div className="flex items-center justify-between">
-                    <span>{headerLabels[column] || column}</span>
-                    <div className="flex items-center space-x-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <span className="block truncate">{headerLabels[column] || column}</span>
+                      {(columnValuePaths[column] || []).length > 0 && (
+                        <span className="block text-[10px] font-normal text-primary-600 truncate">
+                          {pathToLabel(column, columnValuePaths[column])}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center space-x-1">
                       {/* Hide/Show Icon - appears on hover */}
                       {hoveredColumn === column && (
                         <button
@@ -1106,6 +1829,20 @@ const DataTable = ({
                           )}
                         </button>
                       )}
+
+                      {/* Column drilldown menu trigger */}
+                      <button
+                        type="button"
+                        onClick={(e) => toggleColumnMenu(column, e)}
+                        className={`p-1 rounded transition-colors duration-200 ${
+                          columnActive || columnMenuOpen === column
+                            ? 'bg-primary-100 text-primary-700 ring-1 ring-primary-300'
+                            : 'text-gray-400 hover:text-gray-700 hover:bg-gray-300'
+                        }`}
+                        title="Column options"
+                      >
+                        <ListFilter className="h-4 w-4" />
+                      </button>
                       
                       {/* Sort Icons */}
                       <div className="flex flex-col">
@@ -1127,7 +1864,8 @@ const DataTable = ({
                     </div>
                   </div>
                 </th>
-              ))}
+              );
+              })}
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
@@ -1153,10 +1891,8 @@ const DataTable = ({
                         className="input-field text-sm w-full min-w-[8rem]"
                       />
                     ) : (
-                      <div className="max-w-xs truncate" title={String(row[column])}>
-                        {row[column] !== null && row[column] !== undefined
-                          ? getDisplayValue(column, String(row[column]))
-                          : '-'}
+                      <div className="max-w-xs truncate" title={getCellText(row, column)}>
+                        {getCellText(row, column)}
                       </div>
                     )}
                   </td>
@@ -1174,7 +1910,13 @@ const DataTable = ({
           Showing {totalFiltered === 0 ? 0 : paginationStart}–{paginationEnd} of {totalFiltered} rows
           {totalFiltered !== data.length && (
             <span className="ml-2 text-primary-600">
-              ({data.length} total{Object.values(filters).some(f => f) || searchTerm ? ', filtered' : ''})
+              ({data.length} total
+              {Object.values(filters).some((f) => f) ||
+              Object.values(columnDropdownValues).some((v) => v?.length) ||
+              searchTerm
+                ? ', filtered'
+                : ''}
+              )
             </span>
           )}
         </div>
