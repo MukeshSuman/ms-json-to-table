@@ -4,7 +4,8 @@ FROM node:20-alpine AS build
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci
+# Prefer clean lock install; fall back if lock drifts in older checkouts
+RUN npm ci --omit=dev || npm install --omit=dev
 
 COPY public ./public
 COPY src ./src
@@ -13,6 +14,8 @@ COPY tailwind.config.js postcss.config.js ./
 # CRA needs these for a production build
 ENV CI=true
 ENV GENERATE_SOURCEMAP=false
+# Avoid OOM on small VPS builds
+ENV NODE_OPTIONS=--max-old-space-size=2048
 
 RUN npm run build
 
